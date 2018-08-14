@@ -5,9 +5,10 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-
+import visdom
 from torch.autograd import Variable
 
+BATCH_SIZE = 10
 
 transform = transforms.Compose(
     [transforms.ToTensor(),
@@ -17,8 +18,8 @@ trainset = torchvision.datasets.CIFAR100(root='/home/nijunpei/pywork/cifar-100/d
                                          download=True,transform=transform)
 testset = torchvision.datasets.CIFAR100(root='/home/nijunpei/pywork/cifar-100/data',train=False,
                                         download=True,transform=transform)
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=15,shuffle=True,num_workers=2)
-testloader = torch.utils.data.DataLoader(testset,batch_size=15,shuffle=False,num_workers=2)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=BATCH_SIZE,shuffle=True,num_workers=2)
+testloader = torch.utils.data.DataLoader(testset,batch_size=BATCH_SIZE,shuffle=False,num_workers=2)
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
@@ -147,34 +148,54 @@ class ResSENet(nn.Module):
         return x
 
 
-def ressenet50(pretrained=False, **kwargs):
-    model = ResSENet(ResSEBlock, [3, 4, 6, 3], **kwargs)
+def ressenet152(pretrained=False, **kwargs):
+    model = ResSENet(ResSEBlock, [3, 8, 36, 3], **kwargs)
     return model
 
-net = ressenet50()
+import numpy as np
+
+
+net = ressenet152()
 print(net)
 net.cuda()
 
+viz = visdom.Visdom(env='cifar100')
+line = viz.line(Y=np.arange(1), env="cifar100")
 
 criterion = nn.CrossEntropyLoss()
 criterion.cuda()
-optimizer = optim.Adam(net.parameters(), lr=1e-3)
+optimizer = optim.Adam(net.parameters(), lr=0.0005)
 
 def train(epoch):
+    running_loss = 0.0
+    correct = 0.0
     net.train()
-    for batch_index,(data, target) in enumerate(trainloader):
+    for batch_index,(data, target) in enumerate(trainloader,1):
         #data.cuda()
         #target.cuda()
         data, target = Variable(data).cuda(), Variable(target).cuda()
         optimizer.zero_grad()
         output = net(data)
         loss = criterion(output, target)
+        running_loss += loss.data[0]
+        pred = output.data.max(1)[1]  # get the index of the max log-probability
+        correct += pred.eq(target.data).cpu().sum()
         loss.backward()
         optimizer.step()
         if batch_index % 50 == 0 :
             print('Train epoch:{} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_index * len(data), len(trainloader.dataset),
                 100. * batch_index / len(trainloader), loss.data[0]))
+    running_loss /= len(trainloader)
+    print('\nTrain set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        running_loss, correct, len(trainloader.dataset),
+        100. * correct / len(trainloader.dataset)))
+    train_loss.append(running_loss)
+    train_acc.append(100. * correct / len(trainloader.dataset))
+
+
+
+
 def test(epoch):
     net.eval()#把module设置为评估模式，只对Dropout和BatchNorm模块有影响
     test_loss = 0
@@ -191,7 +212,20 @@ def test(epoch):
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(testloader.dataset),
         100. * correct / len(testloader.dataset)))
+    ts_loss.append(test_loss)
+    ts_acc.append(100. * correct / len(testloader.dataset))
 
-for epoch in range(1):
+
+train_loss ,train_acc,  ts_loss, ts_acc = [], [], [], []
+
+for epoch in range(15):
     train(epoch)
     test(epoch)
+
+viz.line(Y=np.column_stack((np.array(train_loss),np.array(train_acc),
+                            np.array(ts_loss), np.array(ts_acc))),
+         win=line,
+         opts=dict(legend=["train_loss","train_acc",
+                           "test_loss", "test_acc"],
+                   title="cafar100"),
+         env="cifar100")
